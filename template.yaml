@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Bedrock のユーザー別利用料金を CUR 2.0 から集計し、毎朝 Teams に投稿する
+
+Parameters:
+  TeamsWebhookUrl:
+    Type: String
+    NoEcho: true
+    Description: Teams Workflows の Webhook URL
+  AthenaDatabase:
+    Type: String
+    Default: athenadataexports_bedrock_usage
+  AthenaTable:
+    Type: String
+    Default: data
+  AthenaWorkGroup:
+    Type: String
+    Default: primary
+  CurBucketName:
+    Type: String
+    Description: CUR 2.0 の出力先バケット名
+  AthenaResultsBucketName:
+    Type: String
+    Description: Athena のクエリ結果を置くバケット名
+  AthenaResultsPrefix:
+    Type: String
+    Default: athena-results/bedrock-teams-report/
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 9 * * ? *)
+    Description: 実行タイミング（Asia/Tokyo）。既定は毎朝9時
+  TopNUsers:
+    Type: Number
+    Default: 8
+    Description: グラフに個別表示するユーザー数（残りは「その他」）
+
+Resources:
+  ReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bedrock-usage-teams-report
+      CodeUri: src/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Timeout: 300
+      MemorySize: 256
+      Environment:
+        Variables:
+          TEAMS_WEBHOOK_URL: !Ref TeamsWebhookUrl
+          ATHENA_DATABASE: !Ref AthenaDatabase
+          ATHENA_TABLE: !Ref AthenaTable
+          ATHENA_WORKGROUP: !Ref AthenaWorkGroup
+          ATHENA_OUTPUT_LOCATION: !Sub s3://${AthenaResultsBucketName}/${AthenaResultsPrefix}
+          TOP_N_USERS: !Ref TopNUsers
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - athena:StartQueryExecution
+                - athena:GetQueryExecution
+                - athena:GetQueryResults
+                - athena:GetWorkGroup
+              Resource: !Sub arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkGroup}
+            - Effect: Allow
+              Action:
+                - glue:GetDatabase
+                - glue:GetTable
+                - glue:GetPartition
+                - glue:GetPartitions
+              Resource:
+                - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog
+                - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${AthenaDatabase}
+                - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${AthenaDatabase}/*
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+              Resource:
+                - !Sub arn:${AWS::Partition}:s3:::${CurBucketName}
+                - !Sub arn:${AWS::Partition}:s3:::${CurBucketName}/*
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:ListBucket
+                - s3:GetBucketLocation
+                - s3:AbortMultipartUpload
+              Resource:
+                - !Sub arn:${AWS::Partition}:s3:::${AthenaResultsBucketName}
+                - !Sub arn:${AWS::Partition}:s3:::${AthenaResultsBucketName}/*
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: !Ref ScheduleExpression
+            ScheduleExpressionTimezone: Asia/Tokyo
+
+  ReportLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/bedrock-usage-teams-report
+      RetentionInDays: 30
+
+Outputs:
+  FunctionName:
+    Value: !Ref ReportFunction
