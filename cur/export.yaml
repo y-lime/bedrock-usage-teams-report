@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CUR 2.0 のデータエクスポート（IAM プリンシパル付き）。
+  Data Exports は us-east-1 のサービスなので、このスタックは必ず us-east-1 にデプロイする。
+  出力先バケットは infra.yaml で作った東京リージョンのバケット。
+
+Parameters:
+  ExportName:
+    Type: String
+    Default: bedrock-usage
+  CurBucketName:
+    Type: String
+  CurBucketRegion:
+    Type: String
+    Default: ap-northeast-1
+  CurPrefix:
+    Type: String
+    Default: cur2
+
+Resources:
+  CurExport:
+    Type: AWS::BCMDataExports::Export
+    Properties:
+      Export:
+        Name: !Ref ExportName
+        Description: CUR 2.0 with IAM principal data for Bedrock per-user cost
+        DataQuery:
+          # infra.yaml の Glue テーブル定義と列をそろえている
+          QueryStatement: >-
+            SELECT line_item_usage_account_id, line_item_usage_start_date,
+            line_item_product_code, line_item_usage_type, line_item_line_item_type,
+            line_item_usage_amount, line_item_unblended_cost, line_item_iam_principal,
+            product_region_code, tags
+            FROM COST_AND_USAGE_REPORT
+          TableConfigurations:
+            COST_AND_USAGE_REPORT:
+              TIME_GRANULARITY: DAILY
+              INCLUDE_RESOURCES: "FALSE"
+              INCLUDE_SPLIT_COST_ALLOCATION_DATA: "FALSE"
+              INCLUDE_MANUAL_DISCOUNT_COMPATIBILITY: "FALSE"
+              INCLUDE_IAM_PRINCIPAL_DATA: "TRUE"
+        DestinationConfigurations:
+          S3Destination:
+            S3Bucket: !Ref CurBucketName
+            S3Prefix: !Ref CurPrefix
+            S3Region: !Ref CurBucketRegion
+            S3OutputConfigurations:
+              OutputType: CUSTOM
+              Format: PARQUET
+              Compression: PARQUET
+              Overwrite: OVERWRITE_REPORT
+        RefreshCadence:
+          Frequency: SYNCHRONOUS
+
+Outputs:
+  ExportArn:
+    Value: !GetAtt CurExport.ExportArn

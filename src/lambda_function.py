@@ -18,8 +18,13 @@ DB = os.environ["ATHENA_DATABASE"]
 TABLE = os.environ.get("ATHENA_TABLE", "data")
 WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "primary")
 OUTPUT = os.environ.get("ATHENA_OUTPUT_LOCATION", "")
-WEBHOOK = os.environ["TEAMS_WEBHOOK_URL"]
+WEBHOOK_PARAM = os.environ["TEAMS_WEBHOOK_PARAM"]  # SSM パラメータ名（SecureString）
 TOP_N = int(os.environ.get("TOP_N_USERS", "8"))
+
+
+def webhook_url():
+    ssm = boto3.client("ssm")
+    return ssm.get_parameter(Name=WEBHOOK_PARAM, WithDecryption=True)["Parameter"]["Value"]
 
 
 def run_query(sql):
@@ -153,7 +158,7 @@ def wrap(body):
 
 def post(payload):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(WEBHOOK, data=data, method="POST",
+    req = urllib.request.Request(webhook_url(), data=data, method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as res:
         print(f"Teams webhook status: {res.status}")

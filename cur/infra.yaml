@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CUR 2.0 の受け皿（S3）と Athena テーブルを作る。Athena を使うリージョン（東京など）にデプロイする。
+  テーブルはパーティション射影を使うので、Glue Crawler なしで新しい月のデータが自動で見える。
+
+Parameters:
+  CurBucketName:
+    Type: String
+    Description: CUR 2.0 の出力先バケット名（新規作成）
+  CurPrefix:
+    Type: String
+    Default: cur2
+  ExportName:
+    Type: String
+    Default: bedrock-usage
+    Description: export.yaml と同じ名前にする
+  AthenaResultsBucketName:
+    Type: String
+    Description: Athena のクエリ結果用バケット名（新規作成）
+  DatabaseName:
+    Type: String
+    Default: bedrock_cur
+
+Resources:
+  CurBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref CurBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Data Exports が書き込めるようにする（公式ドキュメントのバケットポリシー）
+  CurBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CurBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAWSDataExportsToWriteToS3
+            Effect: Allow
+            Principal:
+              Service:
+                - billingreports.amazonaws.com
+                - bcm-data-exports.amazonaws.com
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+            Resource:
+              - !GetAtt CurBucket.Arn
+              - !Sub ${CurBucket.Arn}/*
+            Condition:
+              StringLike:
+                aws:SourceArn:
+                  - !Sub arn:${AWS::Partition}:cur:us-east-1:${AWS::AccountId}:definition/*
+                  - !Sub arn:${AWS::Partition}:bcm-data-exports:us-east-1:${AWS::AccountId}:export/*
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  AthenaResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref AthenaResultsBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireQueryResults
+            Status: Enabled
+            ExpirationInDays: 30
+
+  Database:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref DatabaseName
+
+  # 集計に使う列だけを定義（Parquet は列名で読むので全列定義は不要）
+  CurTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref Database
+      TableInput:
+        Name: data
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          projection.enabled: "true"
+          projection.billing_period.type: date
+          projection.billing_period.format: yyyy-MM
+          projection.billing_period.range: 2026-04,NOW
+          projection.billing_period.interval: "1"
+          projection.billing_period.interval.unit: MONTHS
+          storage.location.template: !Sub s3://${CurBucketName}/${CurPrefix}/${ExportName}/data/BILLING_PERIOD=${!billing_period}/
+        PartitionKeys:
+          - Name: billing_period
+            Type: string
+        StorageDescriptor:
+          Location: !Sub s3://${CurBucketName}/${CurPrefix}/${ExportName}/data/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - { Name: line_item_usage_account_id, Type: string }
+            - { Name: line_item_usage_start_date, Type: timestamp }
+            - { Name: line_item_product_code, Type: string }
+            - { Name: line_item_usage_type, Type: string }
+            - { Name: line_item_line_item_type, Type: string }
+            - { Name: line_item_usage_amount, Type: double }
+            - { Name: line_item_unblended_cost, Type: double }
+            - { Name: line_item_iam_principal, Type: string }
+            - { Name: product_region_code, Type: string }
+            - { Name: tags, Type: "map<string,string>" }
+
+Outputs:
+  CurBucketName:
+    Value: !Ref CurBucket
+  AthenaResultsBucketName:
+    Value: !Ref AthenaResultsBucket
+  DatabaseName:
+    Value: !Ref Database

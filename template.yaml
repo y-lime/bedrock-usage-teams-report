@@ -3,13 +3,13 @@ Transform: AWS::Serverless-2016-10-31
 Description: Bedrock のユーザー別利用料金を CUR 2.0 から集計し、毎朝 Teams に投稿する
 
 Parameters:
-  TeamsWebhookUrl:
+  TeamsWebhookParam:
     Type: String
-    NoEcho: true
-    Description: Teams Workflows の Webhook URL
+    Default: /bedrock-usage/teams-webhook-url
+    Description: Teams Webhook URL を入れた SSM パラメータ名（SecureString）
   AthenaDatabase:
     Type: String
-    Default: athenadataexports_bedrock_usage
+    Default: bedrock_cur
   AthenaTable:
     Type: String
     Default: data
@@ -24,7 +24,7 @@ Parameters:
     Description: Athena のクエリ結果を置くバケット名
   AthenaResultsPrefix:
     Type: String
-    Default: athena-results/bedrock-teams-report/
+    Default: teams-report/
   ScheduleExpression:
     Type: String
     Default: cron(0 9 * * ? *)
@@ -44,9 +44,11 @@ Resources:
       Runtime: python3.13
       Timeout: 300
       MemorySize: 256
+      LoggingConfig:
+        LogGroup: !Ref ReportLogGroup
       Environment:
         Variables:
-          TEAMS_WEBHOOK_URL: !Ref TeamsWebhookUrl
+          TEAMS_WEBHOOK_PARAM: !Ref TeamsWebhookParam
           ATHENA_DATABASE: !Ref AthenaDatabase
           ATHENA_TABLE: !Ref AthenaTable
           ATHENA_WORKGROUP: !Ref AthenaWorkGroup
@@ -54,6 +56,9 @@ Resources:
           TOP_N_USERS: !Ref TopNUsers
       Policies:
         - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TeamsWebhookParam}
             - Effect: Allow
               Action:
                 - athena:StartQueryExecution
